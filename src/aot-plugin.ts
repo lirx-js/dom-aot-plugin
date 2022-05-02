@@ -44,6 +44,16 @@ import {
 } from './shared/parse/estree';
 import { parseEcmaScript } from './shared/parse/parse-ecsmascript';
 
+function sleep(
+  timeout: number,
+) {
+  return new Promise<void>((
+    resolve: () => void,
+  ): void => {
+    setTimeout(resolve, timeout);
+  });
+}
+
 /*----------------*/
 
 const ROOT_PATH = Path.process();
@@ -59,6 +69,8 @@ async function writeComponentTemplateModule(
   const id: string = createHash('sha256').update(html).digest('hex');
   const name: string = `${id}.mjs`;
   const path: Path = CACHE_PATH.concat(name);
+
+  // await sleep(Math.random() * 1e3);
 
   try {
     await access(path.toString());
@@ -79,7 +91,12 @@ async function writeComponentTemplateModule(
       recursive: true,
     });
 
+    if (moduleContent.includes(');ode;')) {
+      console.log('bugged', name);
+    }
+
     await writeFile(path.toString(), moduleContent);
+    // await sleep(100);
   }
 
   return path;
@@ -550,7 +567,40 @@ async function runAOT(
   }
 }
 
-export function aotPlugin(): any {
+
+let aotQueue: Promise<string> = Promise.resolve<string>('');
+
+function runAOTQueue(
+  src: string,
+  path: string,
+): Promise<string> {
+  return aotQueue = aotQueue.then(() => runAOT(src, path));
+}
+
+/*----------*/
+
+export interface IAOTPluginOptionsPathMatchesFunction {
+  (
+    path: string,
+  ): boolean;
+}
+
+export interface IAOTPluginOptions {
+  pathMatches?: IAOTPluginOptionsPathMatchesFunction;
+}
+
+export const DEFAULT_AOT_PLUGIN_PATH_MATCHES_FUNCTION: IAOTPluginOptionsPathMatchesFunction = (
+  path: string,
+): boolean => {
+  return path.endsWith('.ts');
+}
+
+
+export function aotPlugin(
+  {
+    pathMatches = DEFAULT_AOT_PLUGIN_PATH_MATCHES_FUNCTION,
+  }: IAOTPluginOptions = {},
+): any {
   return {
     name: 'aot',
 
@@ -558,9 +608,10 @@ export function aotPlugin(): any {
       src: string,
       path: string,
     ): Promise<any> => {
-      if (path.endsWith('.ts')) {
+      if (pathMatches(path)) {
         return {
-          code: await runAOT(src, path),
+          // code: await runAOT(src, path),
+          code: await runAOTQueue(src, path),
           map: null,
         };
       }
