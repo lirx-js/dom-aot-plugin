@@ -1,5 +1,11 @@
 import { Path } from '@lifaon/path';
-import { ILines, linesToString, transpileReactiveHTMLAsRawComponentTemplateModuleToReactiveDOMJSLines } from '@lirx/dom';
+import {
+  compileStyleAsCompiledReactiveCSS,
+  ICompiledReactiveCSS,
+  ILines,
+  linesToString,
+  transpileReactiveHTMLToComponentTemplateModule,
+} from '@lirx/dom';
 import { Node } from 'acorn';
 import { full } from 'acorn-walk';
 import { generate } from 'astring';
@@ -12,6 +18,7 @@ import {
   ImportDefaultSpecifier,
   ImportNamespaceSpecifier,
   ImportSpecifier,
+  Literal,
   MemberExpression,
   ObjectExpression,
   Pattern,
@@ -22,6 +29,8 @@ import { access, mkdir, writeFile } from 'fs/promises';
 import { createTemplateUUID } from './shared/misc/create-template-uuid';
 import { polyfillDOM } from './shared/misc/polyfill-dom';
 import { readFileAsString } from './shared/misc/read-file-as-string';
+import { compileSASSFile } from './shared/optimize/compile-sass';
+import { minifyCSS } from './shared/optimize/minify-css';
 import { minifyHTML } from './shared/optimize/minify-html';
 import {
   ExpressionOrSpreadElement,
@@ -77,23 +86,22 @@ async function writeComponentTemplateModule(
   } catch {
     const minifiedHTML: string = minifyHTML(html);
 
-    const comments: ILines = [
+    const commentLines: ILines = [
       `/**`,
       ` * Component template generated from: ${templatePath}`,
       ` */`,
     ];
 
-    const reactiveHTMLLines: ILines = transpileReactiveHTMLAsRawComponentTemplateModuleToReactiveDOMJSLines(minifiedHTML, comments);
+    const reactiveHTMLLines: ILines = transpileReactiveHTMLToComponentTemplateModule({
+      html: minifiedHTML,
+      commentLines,
+    });
 
     const moduleContent: string = linesToString(reactiveHTMLLines);
 
     await mkdir(path.dirnameOrThrow().toString(), {
       recursive: true,
     });
-
-    if (moduleContent.includes(');ode;')) {
-      console.log('bugged', name);
-    }
 
     await writeFile(path.toString(), moduleContent);
     // await sleep(100);
@@ -109,6 +117,25 @@ interface IImportSpecifier {
   local: string;
 }
 
+function createLiteral(
+  value: string,
+): Literal {
+  return {
+    type: 'Literal',
+    value,
+    raw: JSON.stringify(value),
+  };
+}
+
+function createIdentifier(
+  name: string,
+): Identifier {
+  return {
+    type: 'Identifier',
+    name,
+  };
+}
+
 function createImportDeclaration(
   path: string,
   specifiers: Array<ImportSpecifier | ImportDefaultSpecifier | ImportNamespaceSpecifier> = [],
@@ -116,11 +143,7 @@ function createImportDeclaration(
   return {
     type: 'ImportDeclaration',
     specifiers,
-    source: {
-      type: 'Literal',
-      value: path,
-      raw: JSON.stringify(path),
-    },
+    source: createLiteral(path),
   };
 }
 
@@ -158,14 +181,8 @@ function createImportSpecifier(
 ): ImportSpecifier {
   return {
     type: 'ImportSpecifier',
-    imported: {
-      type: 'Identifier',
-      name: imported,
-    },
-    local: {
-      type: 'Identifier',
-      name: local,
-    },
+    imported: createIdentifier(imported),
+    local: createIdentifier(local),
   };
 }
 
@@ -174,10 +191,7 @@ function createImportDefaultSpecifier(
 ): ImportDefaultSpecifier {
   return {
     type: 'ImportDefaultSpecifier',
-    local: {
-      type: 'Identifier',
-      name: local,
-    },
+    local: createIdentifier(local),
   };
 }
 
@@ -420,10 +434,7 @@ export function mutate$CompileReactiveHTMLAsComponentTemplateCallExpressionAST$T
         ...property.key,
         name: 'template',
       } as Identifier,
-      value: {
-        type: 'Identifier',
-        name: templateName,
-      },
+      value: createIdentifier(templateName),
     };
   };
 
@@ -507,6 +518,160 @@ async function analyseCompileReactiveHTMLAsComponentTemplateCallExpression(
   Object.assign(node, newNode);
 }
 
+/** REACTIVE STYLE **/
+
+export interface IMutate$CompileReactiveStyleAsComponentStyleCallExpressionAST$ToCreateComponentStyleFromCompiledReactiveCSSCallExpressionASTOptions {
+  node: CallExpression;
+  path: string;
+  rootAST: Node;
+  load: boolean;
+}
+
+export function mutate$CompileReactiveStyleAsComponentStyleCallExpressionAST$ToCreateComponentStyleFromCompiledReactiveCSSCallExpressionAST(
+  {
+    node,
+    path,
+    rootAST,
+    load,
+  }: IMutate$CompileReactiveStyleAsComponentStyleCallExpressionAST$ToCreateComponentStyleFromCompiledReactiveCSSCallExpressionASTOptions,
+): Promise<CallExpression> {
+
+  const generateCallee = (
+    callee: Identifier = node.callee as Identifier,
+  ): Identifier => {
+    const imported: string = 'createComponentStyleFromCompiledReactiveCSS';
+    const local: string = imported;
+
+    addImportToProgram(
+      rootAST,
+      '@lirx/dom',
+      {
+        imported,
+        local,
+      },
+    );
+
+    return {
+      ...callee,
+      name: local,
+    };
+  };
+
+  const convertCSSValue$OfCompileReactiveStyleAsComponentStyle$ToStringOrURL = (
+    node: Expression | Pattern | Super,
+    path: string,
+    rootAST: Node,
+  ): StringOrURL => {
+    const result: StringOrURL | null = convertString$TemplateStringOrSimpleImportedConstantNodeToStringOrURL(node, path, rootAST);
+    if (result === null) {
+      console.log(node);
+      throw new Error(`Unoptimizable css value`);
+    } else {
+      return result;
+    }
+  };
+
+  const convertURLValue$OfCompileReactiveStyleAsComponentStyle$ToURL = (
+    node: Expression | Pattern | Super,
+    path: string,
+  ): URL => {
+    const result: URL | null = convertURLNodeToURL(node, path);
+    if (result === null) {
+      console.log(node);
+      throw new Error(`Invalid URL format`);
+    } else {
+      return result;
+    }
+  };
+
+  const generateArgumentsFromExpression = async (
+    node: Expression | Pattern | Super,
+  ): Promise<[ObjectExpression]> => {
+    const css: StringOrURL = load
+      ? convertURLValue$OfCompileReactiveStyleAsComponentStyle$ToURL(node, path)
+      : convertCSSValue$OfCompileReactiveStyleAsComponentStyle$ToStringOrURL(node, path, rootAST);
+
+    const _css: string = (typeof css === 'string')
+      ? css
+      // : compileSASS(await readFileAsString(css.pathname));
+      : compileSASSFile(css.pathname);
+
+    const { css: compiledCSS, id }: ICompiledReactiveCSS = compileStyleAsCompiledReactiveCSS(
+      _css,
+      `host-`,
+    );
+
+    const minifiedCSS: string = await minifyCSS(compiledCSS);
+
+    return [
+      {
+        type: 'ObjectExpression',
+        properties: [
+          {
+            type: 'Property',
+            method: false,
+            shorthand: false,
+            computed: false,
+            kind: 'init',
+            key: createIdentifier('css'),
+            value: createLiteral(minifiedCSS),
+          },
+          {
+            type: 'Property',
+            method: false,
+            shorthand: false,
+            computed: false,
+            kind: 'init',
+            key: createIdentifier('id'),
+            value: createLiteral(id),
+          }
+        ],
+      }
+    ];
+  };
+
+  const generateArguments = (
+    callExpressionArguments: ExpressionOrSpreadElement[],
+  ): Promise<[ObjectExpression]> => {
+    if (callExpressionArguments.length === 1) {
+      return generateArgumentsFromExpression(callExpressionArguments[0] as Expression | Pattern | Super);
+    } else {
+      throw new Error(`Malformed function call. Only one argument was expected.`);
+    }
+  };
+
+  const generateCallExpression = async (
+    node: CallExpression,
+  ): Promise<CallExpression> => {
+    return {
+      ...node,
+      callee: generateCallee(node.callee as Identifier),
+      arguments: await generateArguments(node.arguments),
+    };
+  };
+
+  return generateCallExpression(node);
+}
+
+export interface IAnalyseCompileReactiveStyleAsComponentTemplateCallExpressionOptions extends IMutate$CompileReactiveHTMLAsComponentTemplateCallExpressionAST$ToConvertRawComponentTemplateToComponentTemplateCallExpressionASTOptions {
+}
+
+async function analyseCompileReactiveStyleAsComponentStyleCallExpression(
+  {
+    node,
+    rootAST,
+    ...options
+  }: IAnalyseCompileReactiveStyleAsComponentTemplateCallExpressionOptions,
+): Promise<void> {
+  const newNode = await mutate$CompileReactiveStyleAsComponentStyleCallExpressionAST$ToCreateComponentStyleFromCompiledReactiveCSSCallExpressionAST({
+    node,
+    rootAST,
+    ...options,
+  });
+
+  Object.assign(node, newNode);
+}
+
 /*----------------*/
 
 async function runAOT(
@@ -550,6 +715,23 @@ async function runAOT(
               }),
           );
           break;
+        case 'compileStyleAsComponentStyle':
+        case 'loadStyleAsComponentStyle':
+          promises.push(
+            analyseCompileReactiveStyleAsComponentStyleCallExpression({
+              node,
+              path,
+              rootAST,
+              load: (functionName === 'loadStyleAsComponentStyle'),
+            })
+              .catch((error: Error) => {
+                // console.log(error);
+                console.warn(
+                  `Failed to optimize '${functionName}' from file '${path}': ${error.message}`,
+                );
+              }),
+          );
+          break;
       }
     }
   });
@@ -566,7 +748,6 @@ async function runAOT(
     throw e;
   }
 }
-
 
 let aotQueue: Promise<string> = Promise.resolve<string>('');
 
@@ -593,8 +774,7 @@ export const DEFAULT_AOT_PLUGIN_PATH_MATCHES_FUNCTION: IAOTPluginOptionsPathMatc
   path: string,
 ): boolean => {
   return path.endsWith('.ts');
-}
-
+};
 
 export function aotPlugin(
   {
@@ -609,6 +789,7 @@ export function aotPlugin(
       path: string,
     ): Promise<any> => {
       if (pathMatches(path)) {
+        // console.log(src);
         return {
           // code: await runAOT(src, path),
           code: await runAOTQueue(src, path),

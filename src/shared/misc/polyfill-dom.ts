@@ -7,7 +7,7 @@ export function polyfillDOM(): Promise<void> {
       .then((result: any) => {
         const JSDOM: any = result.default.JSDOM;
         const dom = new JSDOM(`<!DOCTYPE html><p>Hello world</p>`);
-        ['DOMParser', 'Node', 'HTMLElement', 'Element'].forEach((key: string) => {
+        ['DOMParser', 'Node', 'HTMLElement', 'Element', 'document', 'CSSRule'].forEach((key: string) => {
           if (!(key in globalThis)) {
             // console.log('setting', key);
             globalThis[key] = dom.window[key];
